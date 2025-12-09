@@ -62,7 +62,6 @@ def get_llm_config() -> Dict:
                 {"model": "gemini-2.5-flash", "api_key": api_key, "api_type": "google"}
             ],
             "temperature": 0.2,  # Lower temperature for coding/TDD
-            "seed": 42,
         }
     else:
         print("GEMINI_API_KEY not found. Falling back to local Ollama.")
@@ -77,7 +76,6 @@ def get_llm_config() -> Dict:
                 }
             ],
             "temperature": 0.2,
-            "seed": 42,
             "request_timeout": 300,  # Increased timeout for local execution
         }
 
@@ -123,31 +121,30 @@ iac_architect = autogen.AssistantAgent(
 # Workbook_Editor: Content Writer.
 workbook_editor = autogen.AssistantAgent(
     name="Workbook_Editor",
-    system_message="""You are the Lead Technical Writer and Editor for the IaC Workbook.
-    Your goal is to write clear, comprehensive Markdown content based on the guidance received from the other agents.
-    1. Write the narrative text, explanations, and tables based on the Architect's guidance and the Spec.
-    2. SAVE the content to a file (e.g., `docs/workbook_part1.md`) by outputting a PYTHON BLOCK that writes the file.
+    system_message="""You are the Lead Technical Writer and Editor.
+    Your goal is to write clear, comprehensive Markdown content based on the Guidance.
+    1. Write the narrative text, explanations, and tables.
+    2. SAVE the content to a specific file for that chapter.
+       - Use filenames like `docs/chapter_01_git.md`, `docs/chapter_02_devcontainers.md`, etc.
+       - DO NOT use generic names like "part1" to avoid overwriting.
        
-       CRITICAL: Your content will contain Markdown code blocks (```) and quotes. 
-       To avoid Python SyntaxErrors, you MUST use `repr()` or string concatenation, or carefully escape quotes.
-       
-       SAFE PATTERN Example:
+       CRITICAL: Use safe string handling for content writing.
        ```python
        content = (
-           "# Title\\n"
-           "Some text with \\"quotes\\" and code:\\n"
-           "```python\\nprint('hello')\\n```\\n"
+           "# Chapter X\\n"
+           "Content...\\n"
        )
        import os
        os.makedirs('docs', exist_ok=True)
-       with open('docs/workbook_part1.md', 'a', encoding='utf-8') as f:
+       with open('docs/chapter_0X_topic.md', 'w', encoding='utf-8') as f:
            f.write(content)
        ```
-    3. Use 'a' (append) mode if adding to an existing file chapter.
-    4. Call the 'IaC_Coder' to generate specific code snippets (Python, Terraform, Ansible) to be saved in `src/`.
-    5. Ends your message by explicitly naming the next speaker: 
-       - "Executor, please save this file. After saving, the next speaker is IaC_Coder to provide examples."
-       - "Executor, please save this file. After saving, the next speaker is Reviewer."
+    3. Call the 'IaC_Coder' to generate specific code snippets if needed.
+    4. If no code is needed, proceed to the next chapter yourself or ask Architect for the next topic.
+    
+    Ends your message by explicitly naming the next speaker: 
+    - "Executor, please save this file. After saving, the next speaker is IaC_Coder."
+    - "Executor, please save this file. After saving, the next speaker is IaC_Architect."
     """,
     llm_config=llm_config,
 )
@@ -155,75 +152,101 @@ workbook_editor = autogen.AssistantAgent(
 # IaC_Coder: Code Generator.
 iac_coder = autogen.AssistantAgent(
     name="IaC_Coder",
-    system_message="""You are a Senior DevOps Engineer and Polyglot Coder.
-    Your goal is to generate high-quality code examples for the Workbook.
-    1. Listen to requests from 'Workbook_Editor'.
-    2. Generate specific code snippets (Pydantic models, Terraform HCL, Ansible YAML, etc.).
-    3. SAVE the code to the requested file path by outputting a PYTHON BLOCK that writes the file.
-       CRITICAL: Handle quotes carefully to avoid SyntaxErrors.
-       
-       Example:
+    system_message="""You are a Senior DevOps Engineer.
+    1. Generate specific code snippets (Pydantic models, Terraform HCL, Ansible YAML).
+    2. SAVE the code to `src/` with appropriate filenames.
+       CRITICAL: Handle quotes carefully.
        ```python
-       code_content = (
-           "resource \\"aws_s3_bucket\\" \\"b\\" {\\n"
-           "  bucket = \\"my-bucket\\"\\n"
-           "}\\n"
-       )
+       code = "..."
        import os
        os.makedirs('src/terraform', exist_ok=True)
        with open('src/terraform/main.tf', 'w', encoding='utf-8') as f:
-           f.write(code_content)
+           f.write(code)
        ```
-    4. ALWAYS wrap code in valid Markdown code blocks for display, AND provide the Python block to save it.
-    5. Hand off back to 'Workbook_Editor' to continue the document flow.
-    Ends your message by explicitly naming the next speaker: "Executor, please save this code. After saving, the next speaker is Workbook_Editor."
+    3. Hand off back to 'Workbook_Editor' or 'IaC_Architect'.
+    Ends your message by naming the next speaker: "Executor, please save this code. After saving, the next speaker is Workbook_Editor."
     """,
     llm_config=llm_config,
 )
 
-# Reviewer: Style and Format Checker.
-reviewer = autogen.AssistantAgent(
-    name="Reviewer",
-    system_message="""You are a strict Technical Editor and Proofreader.
-    Your goal is to polish the final output.
-    1. Check for Markdown syntax errors (broken tables, unclosed blocks).
-    2. Check for grammatical issues and clarity.
-    3. Verify that code blocks provided by 'IaC_Coder' are formatted correctly.
-    4. If issues found, instruct 'Workbook_Editor' to fix.
-    5. If the section is perfect, confirm completion to the Architect or proceed to the next topic.
-    Ends your message by explicitly naming the next speaker:
-    - "Workbook_Editor, please fix [Issue]."
-    - "IaC_Architect, Section complete. Ready for next topic."
-    When proofreading, consider the following document as the golden source:
-    """ + spec_content,
-    llm_config=llm_config,
-)
-
-# Executor: Runs commands (Kept from original, but mainly for file I/O if needed later).
+# Executor: Runs the code.
 executor = CleanUserProxyAgent(
     name="Executor",
-    system_message="""You are the build server and execution environment.
-    1. You execute python scripts, pytest commands, and linter checks if requested.
-    2. Working directory: '.', but code is in 'src/' and 'tests/'.
-    3. When ANY agent provides code blocks (bash or python), execute them if instructed.
-    4. Report the stdout and stderr back to the chat.
-    5. Be ready to accept "Human Input" at any stage (`human_input_mode="ALWAYS"`).
+    system_message="""You are the build server.
+    1. Execute provided python blocks to save files.
+    2. Working directory: '.'.
     """,
     human_input_mode="NEVER",
     max_consecutive_auto_reply=10,
     is_termination_msg=lambda x: x.get("content", "").rstrip().endswith("TERMINATE"),
     code_execution_config={
-        "work_dir": ".",
-        "use_docker": False,
+        "last_n_messages": 3, 
+        "work_dir": ".", 
+        "use_docker": False
     },
 )
 
 # --- Group Chat Flow ---
 
+# GroupChat management
+# Removed Reviewer as per user request to streamline process.
+# --- Custom Speaker Selection ---
+
+def custom_speaker_selection_func(last_speaker, groupchat):
+    """
+    Custom speaker selection logic to enforce strict sequential flow and Executor usage.
+    """
+    messages = groupchat.messages
+    if not messages:
+        return iac_architect # Start with Architect (or let strict prompt decide?) matches initiation
+    
+    last_message = messages[-1]
+    last_content = last_message.get("content", "")
+    
+    # 1. CRITICAL: If message has Python code block and sender is NOT Executor, 
+    #    we MUST run it. Go to Executor.
+    if "```python" in last_content and last_speaker != executor:
+        return executor
+        
+    # 2. If sender is Executor (meaning code just ran), look for explicit handoff
+    if last_speaker == executor:
+        if "next speaker is IaC_Architect" in last_content:
+            return iac_architect
+        if "next speaker is Workbook_Editor" in last_content:
+            return workbook_editor
+        if "next speaker is IaC_Coder" in last_content:
+            return iac_coder
+            
+    # 3. If sender is Architect, they instruct Editor.
+    if last_speaker == iac_architect:
+        return workbook_editor
+        
+    # 4. If sender is Editor:
+    #    - If they provided code, rule #1 takes care of it (goes to Executor).
+    #    - If text only (rare, but possible if just discussing), strictly go to Coder or back to Architect?
+    #      Let's rely on explicit text trigger or default to Coder if ambiguous?
+    #      Actually, Editor is instructed to explicit name next speaker.
+    #      If Editor says "next speaker is IaC_Coder", let's respect that.
+    if last_speaker == workbook_editor:
+        if "next speaker is IaC_Coder" in last_content:
+            return iac_coder
+        if "next speaker is IaC_Architect" in last_content:
+            return iac_architect
+            
+    # 5. If sender is Coder:
+    #    - If code, rule #1 takes care (Executor).
+    #    - Else, back to Editor.
+    if last_speaker == iac_coder:
+        return workbook_editor
+
+    # Fallback
+    return "auto"
+
 groupchat = autogen.GroupChat(
-    agents=[iac_architect, workbook_editor, iac_coder, reviewer, executor],
+    agents=[iac_architect, workbook_editor, iac_coder, executor],
     messages=[],
     max_round=100,
+    speaker_selection_method=custom_speaker_selection_func,
 )
 
 # Strict sequential flow managed by the system messages and speaker selection
@@ -231,14 +254,14 @@ manager = autogen.GroupChatManager(groupchat=groupchat, llm_config=llm_config)
 
 # --- Start ---
 
-# --- Start ---
-
 
 
 initial_task = (
-    "Kezd meg a NetDevOps IaC Workbook Library létrehozását, szigorúan a "
-    "lenti 'DETAILED SPECIFICATION' dokumentum fejezeteinek tartalmával, "
-    "Markdown formátumban. A Git Workflow és a DevContainers bevezetésével kezdj!\n\n"
+    "Indítsd el a 'NetDevOps IaC Workbook' generálást a 0-ról."
+    "Generáld le sorban az összes fejezetet az 1.0-tól kezdve a 13.0-ig."
+    "Használj külön fájlokat: `docs/chapter_01_git.md`, `docs/chapter_02_devcontainers.md`, stb."
+    "Szigorúan kövesd a DETAILED SPECIFICATION-t!"
+    "\n\n"
     "--- DETAILED SPECIFICATION ---\n"
     f"{spec_content}"
 )
