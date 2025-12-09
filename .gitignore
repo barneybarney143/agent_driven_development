@@ -3,3 +3,5 @@ __pycache__/
 .venv/
 coding/
 *.pyc
+.cache/
+.mypy_cache/
