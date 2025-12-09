@@ -1,0 +1,10 @@
+pyautogen<0.4
+
+python-dotenv
+google-genai
+google-generativeai
+google-cloud-aiplatform
+pytest
+
+
+flake8
